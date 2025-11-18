@@ -1,0 +1,80 @@
+import pandas as pd
+import requests
+import time
+
+# =============================
+# CONFIGURATION
+# =============================
+API_KEY = "YOUR_USEBOUNCER_API_KEY"  # Replace with your actual API key
+API_URL = "https://api.usebouncer.com/v1/email/verify"
+INPUT_FILE = "emails1.csv"  # Replace with your actual CSV file name
+OUTPUT_VALID = "deliverable.csv"
+OUTPUT_INVALID = "nondeliverable.csv"
+
+# =============================
+# FUNCTIONS
+# =============================
+
+def verify_email(email):
+    """Verify a single email using UseBouncer API."""
+    try:
+        response = requests.get(API_URL, params={"email": email}, headers={"x-api-key": API_KEY}, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"email": email, "status": "error", "reason": f"HTTP {response.status_code}"}
+    except requests.exceptions.RequestException as e:
+        return {"email": email, "status": "error", "reason": str(e)}
+
+def process_emails(emails):
+    """Process a list of emails with error handling and rate limiting."""
+    results = []
+    for idx, email in enumerate(emails):
+        print(f"Verifying {idx+1}/{len(emails)}: {email}")
+        data = verify_email(email)
+        results.append(data)
+        time.sleep(0.5)  # Rate limit to avoid hitting API too fast
+    return results
+
+# =============================
+# MAIN SCRIPT
+# =============================
+try:
+    # Load CSV file
+    df = pd.read_csv(INPUT_FILE)
+    if 'email' not in df.columns:
+        raise ValueError("CSV file must have a column named 'email'")
+
+    # Remove duplicates and invalid formats
+    df['email'] = df['email'].astype(str).str.strip()
+    df = df.drop_duplicates(subset=['email'])
+    df = df[df['email'].str.contains(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", regex=True)]  # Basic email regex
+
+    # Verify emails
+    results = process_emails(df['email'].tolist())
+
+    # Convert to DataFrame
+    verified_df = pd.DataFrame(results)
+
+    # Separate deliverable and nondeliverable
+    deliverable = verified_df[verified_df['status'] == 'deliverable']
+    nondeliverable = verified_df[verified_df['status'] != 'deliverable']
+
+    # Save to CSV
+    deliverable.to_csv(OUTPUT_VALID, index=False)
+    nondeliverable.to_csv(OUTPUT_INVALID, index=False)
+
+    # Calculate bounce risk and toxic emails
+    bounce_estimate = (len(nondeliverable) / len(verified_df)) * 100 if len(verified_df) > 0 else 0
+    toxic_emails = nondeliverable[nondeliverable['reason'].str.contains('toxic', case=False, na=False)]
+
+    # Print summary
+    print("Verification complete!")
+    print(f"Total emails processed: {len(verified_df)}")
+    print(f"Deliverable: {len(deliverable)}")
+    print(f"Nondeliverable: {len(nondeliverable)}")
+    print(f"Bounce Estimate: {bounce_estimate:.2f}%")
+    print(f"Toxic Emails Detected: {len(toxic_emails)}")
+
+except Exception as e:
+    print(f"Error: {e}")
